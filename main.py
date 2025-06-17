@@ -9,30 +9,32 @@ from titan.config import config
 from titan.exchange_connector import ExchangeConnector
 from titan.data_handler import DataHandler
 from titan.orchestrator import MasterOrchestrator
-from titan.bot_manager import BotManager # Import BotManager
+from titan.bot_manager import BotManager
 
 running_tasks: Set[asyncio.Task] = set()
+# Global reference to the BotManager for the signal handler
+main_bot_manager: BotManager = None
 
-def handle_shutdown(sig, loop, bot_manager: BotManager):
+def handle_shutdown(sig, loop):
     """Gracefully stop all running asyncio tasks and save state."""
     logging.info(f"Received shutdown signal {sig.name}. Saving states and cancelling tasks...")
-    if bot_manager:
-        bot_manager.save_all_states()
+    if main_bot_manager:
+        main_bot_manager.save_all_states()
     
-    for task in running_tasks:
+    for task in list(running_tasks): # Use a copy to iterate
         task.cancel()
 
 async def main():
     """Initializes and runs all bot components as concurrent tasks."""
+    global main_bot_manager
     setup_logging()
     logging.info(f"Initializing TitanGrid Master Control in {config.MODE} mode...")
 
-    # --- Instantiate Global/Shared Modules ---
-    # These are shared across all potential bots
+    # Instantiate Global/Shared Modules
     market_data_q = asyncio.Queue()
     
     connector = ExchangeConnector(
-        symbols=[], # The Orchestrator/BotManager will now manage subscriptions
+        symbols=[],
         output_queue=market_data_q
     )
     
@@ -40,11 +42,11 @@ async def main():
         input_queue=market_data_q
     )
 
-    # --- Instantiate Lifecycle and Orchestration Managers ---
-    bot_manager = BotManager(connector=connector, data_handler=data_handler)
-    orchestrator = MasterOrchestrator(bot_manager=bot_manager)
+    # Instantiate Lifecycle and Orchestration Managers
+    main_bot_manager = BotManager(connector=connector, data_handler=data_handler)
+    orchestrator = MasterOrchestrator(bot_manager=main_bot_manager)
 
-    # --- Create and Track Core Service Tasks ---
+    # Create and Track Core Service Tasks
     tasks_to_run = [
         orchestrator.run(),
         connector.run(),
@@ -67,14 +69,9 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     
-    # We need a placeholder BotManager to pass to the shutdown handler
-    # In a more complex app, this might be handled by a global context object
-    temp_connector = ExchangeConnector(symbols=[], output_queue=asyncio.Queue())
-    temp_data_handler = DataHandler(input_queue=asyncio.Queue())
-    main_bot_manager = BotManager(connector=temp_connector, data_handler=temp_data_handler)
-    
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, handle_shutdown, sig, loop, main_bot_manager)
+        # Use a lambda to pass the loop without executing the function immediately
+        loop.add_signal_handler(sig, lambda s=sig: handle_shutdown(s, loop))
 
     try:
         loop.run_until_complete(main())

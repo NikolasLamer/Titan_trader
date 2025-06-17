@@ -1,0 +1,6 @@
+python-dotenv
+websockets
+pandas
+pandas-ta
+numpy
+aiohttp

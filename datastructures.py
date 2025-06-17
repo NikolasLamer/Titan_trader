@@ -1,12 +1,12 @@
 # titan/datastructures.py
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 @dataclass
 class TradeSignal:
     """Represents a high-level signal from the strategy logic."""
     symbol: str
-    signal_type: Literal['ENTRY_LONG', 'ENTRY_SHORT', 'EXIT_LONG', 'EXIT_SHORT']
+    signal_type: Literal['ENTRY_LONG', 'ENTRY_SHORT'] # Simplified to entry signals only
     reason: str
 
 @dataclass
@@ -16,7 +16,9 @@ class Order:
     side: Literal['BUY', 'SELL']
     order_type: Literal['MARKET', 'LIMIT']
     qty: float
-    price: float = None # Required for LIMIT orders
+    price: Optional[float] = None # Required for LIMIT orders
+    # Add a tag to distinguish order intent (e.g., closing a position vs. opening)
+    tag: Optional[str] = None
 
 @dataclass
 class FillConfirmation:
@@ -25,4 +27,11 @@ class FillConfirmation:
     order_id: str
     side: Literal['BUY', 'SELL']
     qty: float
+    price: float
+    tag: Optional[str] = None # Carry the tag from the order
+
+@dataclass
+class PriceUpdate:
+    """Represents the latest price update for a symbol."""
+    symbol: str
     price: float

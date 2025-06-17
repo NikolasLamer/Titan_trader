@@ -1,37 +1,55 @@
 # titan/order_executor.py
 import asyncio
 import logging
-from titan.datastructures import Order
+import random
+from titan.datastructures import Order, FillConfirmation
+from titan.exchange_connector import ExchangeConnector
 
 class OrderExecutor:
     """
     Consumes concrete Order objects and sends them to the
-    ExchangeConnector for execution.
+    ExchangeConnector for execution. After a successful execution,
+    it sends a FillConfirmation back to the PortfolioManager.
     """
-    def __init__(self, order_queue: asyncio.Queue, connector):
+    def __init__(self, order_queue: asyncio.Queue, connector: ExchangeConnector, fill_confirmation_queue: asyncio.Queue):
         self.order_queue = order_queue
-        # The connector is passed in to provide the execution interface
         self.connector = connector
+        self.fill_confirmation_queue = fill_confirmation_queue
 
     async def run(self):
         """Main run loop to process and execute orders."""
         logging.info("OrderExecutor is running.")
         while True:
             try:
-                # Wait for a concrete order from the PortfolioManager
                 order_to_execute: Order = await self.order_queue.get()
-                
                 logging.info(f"Executor received order to process: {order_to_execute}")
-                
-                # Call the connector's method to place the order
-                # The connector handles the actual API communication
+
                 result = await self.connector.place_order(order_to_execute)
-                
-                # Basic handling of the result
+
                 if result and result.get('retCode') == 0:
                     logging.info(f"Order submission successful for {order_to_execute.symbol}.")
-                    # In a full system, we would now monitor this order's ID
-                    # via the private WebSocket feed for fill events.
+
+                    # In a real system, fill price would come from a private WebSocket feed.
+                    # Here, we simulate it or use the order price for LIMIT orders.
+                    # For MARKET orders, pybit does not return avgPrice, so we'd need another call or use last trade price.
+                    # For this implementation, we'll assume the order price for simplicity.
+                    fill_price = order_to_execute.price if order_to_execute.order_type == 'LIMIT' else float(result['result'].get('avgPrice', '0'))
+                    if order_to_execute.order_type == 'MARKET':
+                        # This is a simplification. A robust solution would fetch the last trade price.
+                        # For now, we'll log a warning and proceed.
+                        logging.warning("Market order fill price not available in response, using placeholder. A robust system would fetch this.")
+                        # A better placeholder would be to fetch last trade price from connector
+                        fill_price = await self.connector.get_last_trade_price(order_to_execute.symbol)
+
+
+                    confirmation = FillConfirmation(
+                        symbol=order_to_execute.symbol,
+                        order_id=result['result']['orderId'],
+                        side=order_to_execute.side,
+                        qty=order_to_execute.qty,
+                        price=float(fill_price)
+                    )
+                    await self.fill_confirmation_queue.put(confirmation)
                 else:
                     logging.error(f"Order submission failed for {order_to_execute.symbol}. Reason: {result.get('retMsg')}")
 

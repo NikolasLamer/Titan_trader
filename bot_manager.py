@@ -1,9 +1,8 @@
 # titan/bot_manager.py
 import asyncio
 import logging
-from typing import Dict, Set
+from typing import Dict
 
-from titan.config import config
 from titan.data_handler import DataHandler
 from titan.exchange_connector import ExchangeConnector
 from titan.order_executor import OrderExecutor
@@ -31,19 +30,20 @@ class BotManager:
         strategy_q = asyncio.Queue()
         signal_q = asyncio.Queue()
         order_q = asyncio.Queue()
-        fill_confirmation_q = asyncio.Queue() # New queue for feedback
+        fill_confirmation_q = asyncio.Queue()
+        price_update_q = asyncio.Queue() # New queue for live price updates
 
-        # Register the symbol with the data handler to start receiving data
-        self.data_handler.register_strategy_queue(symbol, strategy_q)
-        if symbol not in self.connector.symbols:
-             self.connector.add_symbol(symbol)
+        # Register all queues with the DataHandler
+        self.data_handler.register_bot_queues(symbol, strategy_q, price_update_q)
+        self.connector.add_symbol(symbol)
 
         # Instantiate all components for the bot
         portfolio_manager = PortfolioManager(
             symbol=symbol,
             signal_queue=signal_q,
             order_queue=order_q,
-            fill_confirmation_queue=fill_confirmation_q, # Pass it here
+            fill_confirmation_queue=fill_confirmation_q,
+            price_update_queue=price_update_q, # Pass it here
             initial_params=params
         )
         strategy = TitanStrategy(
@@ -55,7 +55,7 @@ class BotManager:
         order_executor = OrderExecutor(
             order_queue=order_q,
             connector=self.connector,
-            fill_confirmation_queue=fill_confirmation_q # And here
+            fill_confirmation_queue=fill_confirmation_q
         )
 
         # Create and track all tasks for this bot
@@ -82,7 +82,6 @@ class BotManager:
         pm = bot_instance["portfolio_manager"]
 
         if manage_position:
-            # This requires PortfolioManager to have access to the latest price
             await pm.manage_dropped_position()
 
         pm.save_state()
@@ -91,8 +90,8 @@ class BotManager:
             task.cancel()
 
         await asyncio.gather(*bot_instance["tasks"], return_exceptions=True)
-        self.data_handler.deregister_strategy_queue(symbol)
-        self.connector.remove_symbol(symbol) # Unsubscribe from WebSocket
+        self.data_handler.deregister_bot_queues(symbol)
+        self.connector.remove_symbol(symbol)
         logging.info(f"Bot for {symbol} has been fully stopped.")
 
     def save_all_states(self):

@@ -1,0 +1,14 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  titan-bot:
+    build: .
+    container_name: titan-bot-service
+    restart: unless-stopped
+    ports:
+      # Map port 8000 on your local machine to port 8080 inside the container
+      - "8000:8080"
+    env_file:
+      # Load API keys and other configs from the .env file
+      - ./.env

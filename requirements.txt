@@ -4,3 +4,7 @@ pandas
 pandas-ta
 numpy
 aiohttp
+pybit
+Flask  # For the web application
+gunicorn # Production WSGI server
+uvicorn  # ASGI worker for Gunicorn to handle asyncio

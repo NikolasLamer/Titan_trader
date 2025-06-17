@@ -6,17 +6,18 @@ from typing import Set
 
 from titan.logger import setup_logging
 from titan.config import config
-from titan.datastructures import Order, TradeSignal
 from titan.exchange_connector import ExchangeConnector
 from titan.data_handler import DataHandler
 from titan.strategy_logic import TitanStrategy
 from titan.portfolio_manager import PortfolioManager
 from titan.order_executor import OrderExecutor
+from titan.orchestrator import MasterOrchestrator
 
 # Global set of running tasks for graceful shutdown
 running_tasks: Set[asyncio.Task] = set()
 
-def handle_shutdown(sig):
+def handle_shutdown(sig, loop):
+    """Gracefully stop all running asyncio tasks."""
     logging.info(f"Received shutdown signal {sig.name}. Cancelling tasks...")
     for task in running_tasks:
         task.cancel()
@@ -31,41 +32,40 @@ async def main():
     strategy_input_q = asyncio.Queue()
     signal_q = asyncio.Queue()
     order_q = asyncio.Queue()
-    # In a full implementation, you'd also have queues for private data like fills
-    # fill_q = asyncio.Queue()
 
     # --- Instantiate Modules ---
-    connector = ExchangeConnector(
-        symbols=config.SYMBOLS,
-        output_queue=market_data_q
-    )
-
+    # In a full multi-bot system, a BotManager would handle this part.
+    # For now, we instantiate one set of components for our single symbol.
+    connector = ExchangeConnector(symbols=config.SYMBOLS, output_queue=market_data_q)
+    
     data_handler = DataHandler(
         input_queue=market_data_q,
         strategy_input_queue=strategy_input_q
     )
     
-    # In a multi-symbol system, you'd have one of each of these per symbol
     portfolio_manager = PortfolioManager(
         symbol=config.SYMBOLS[0], 
         signal_queue=signal_q, 
         order_queue=order_q
     )
-
+    
     strategy = TitanStrategy(
         symbol=config.SYMBOLS[0],
         input_queue=strategy_input_q,
         signal_queue=signal_q,
-        portfolio_manager=portfolio_manager # Strategy needs to query state
+        portfolio_manager=portfolio_manager
     )
-
+    
     order_executor = OrderExecutor(
         order_queue=order_q,
-        connector=connector # Pass the connector instance here
+        connector=connector
     )
+    
+    orchestrator = MasterOrchestrator(bot_manager=None) # bot_manager is conceptual for now
 
-    # --- Create and track tasks ---
+    # --- Create and Track Tasks ---
     tasks_to_run = [
+        orchestrator.run(), 
         connector.run(),
         data_handler.run(),
         strategy.run(),
@@ -79,19 +79,21 @@ async def main():
         task.add_done_callback(running_tasks.discard)
 
     logging.info(f"Starting {len(running_tasks)} concurrent tasks...")
-    await asyncio.gather(*running_tasks, return_exceptions=True)
-    logging.info("All tasks have completed.")
-
+    
+    # Keep the main function alive to wait for tasks
+    try:
+        await asyncio.gather(*running_tasks)
+    except asyncio.CancelledError:
+        logging.info("Main task group cancelled. Bot is shutting down.")
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     
-    # Setup graceful shutdown handlers
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, handle_shutdown, sig)
+        loop.add_signal_handler(sig, handle_shutdown, sig, loop)
 
     try:
         loop.run_until_complete(main())
     finally:
-        logging.info("Bot has shut down.")
+        logging.info("Bot shutdown complete.")
         loop.close()

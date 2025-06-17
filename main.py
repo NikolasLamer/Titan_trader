@@ -1,63 +1,86 @@
 # main.py
 import asyncio
 import logging
+import signal
 from typing import Set
 
 from titan.logger import setup_logging
 from titan.config import config
 from titan.exchange_connector import ExchangeConnector
 from titan.data_handler import DataHandler
-from titan.strategy_logic import TitanStrategy
-from titan.portfolio_manager import PortfolioManager
-from titan.order_executor import OrderExecutor
 from titan.orchestrator import MasterOrchestrator
+from titan.bot_manager import BotManager
+
+running_tasks: Set[asyncio.Task] = set()
+
+def handle_shutdown(sig, loop, bot_manager):
+    logging.info(f"Received shutdown signal {sig.name}. Stopping bots and saving state...")
+    # Call bot manager to save state of all active bots
+    if bot_manager:
+        bot_manager.save_all_states()
+    
+    for task in running_tasks:
+        task.cancel()
 
 async def main():
-    """Initializes and runs all bot components as concurrent tasks."""
-    # Logging is now setup in app.py
-    logging.info(f"--- Main bot coroutine started in {config.MODE} mode ---")
+    setup_logging()
+    logging.info(f"Initializing TitanGrid Master Control in {config.MODE} mode...")
 
-    # This set will hold all our main running tasks
-    running_tasks: Set[asyncio.Task] = set()
+    # Shared queues for components that are "global"
+    market_data_q = asyncio.Queue()
+    
+    # --- Instantiate Global/Shared Modules ---
+    connector = ExchangeConnector(
+        symbols=config.SYMBOLS, # This will later be managed by BotManager
+        output_queue=market_data_q
+    )
+    
+    # The data handler needs to be aware of all symbols being traded
+    # A more advanced version might have one data handler per symbol
+    data_handler = DataHandler(
+        input_queue=market_data_q,
+        # This queue is now effectively managed inside the bot manager
+    )
+
+    # --- Instantiate Lifecycle and Orchestration Managers ---
+    bot_manager = BotManager(connector=connector, data_handler=data_handler)
+    orchestrator = MasterOrchestrator(bot_manager=bot_manager)
+
+    # --- Create and Track Core Service Tasks ---
+    tasks_to_run = [
+        orchestrator.run(),
+        connector.run(),
+        data_handler.run(),
+    ]
+    
+    for coro in tasks_to_run:
+        task = asyncio.create_task(coro)
+        running_tasks.add(task)
+        task.add_done_callback(running_tasks.discard)
+
+    logging.info(f"Starting {len(running_tasks)} core service tasks...")
+    
+    try:
+        await asyncio.gather(*running_tasks)
+    except asyncio.CancelledError:
+        logging.info("Main task group cancelled. Bot is shutting down.")
+
+if __name__ == "__main__":
+    # This block is now primarily for local script-based execution
+    # For Docker deployment, the app.py/Gunicorn is the entry point.
+    loop = asyncio.get_event_loop()
+    
+    # The bot_manager instance must be created here to be passed to the shutdown handler
+    # This highlights the complexity of managing shared state in top-level scripts
+    temp_connector = ExchangeConnector(symbols=[], output_queue=asyncio.Queue())
+    temp_data_handler = DataHandler(input_queue=asyncio.Queue(), strategy_input_queue=asyncio.Queue())
+    main_bot_manager = BotManager(connector=temp_connector, data_handler=temp_data_handler)
+    
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, handle_shutdown, sig, loop, main_bot_manager)
 
     try:
-        # --- Initialize Queues ---
-        market_data_q = asyncio.Queue()
-        strategy_input_q = asyncio.Queue()
-        signal_q = asyncio.Queue()
-        order_q = asyncio.Queue()
-
-        # --- Instantiate Modules ---
-        # Note: In a real multi-bot system, a BotManager would dynamically create these workers.
-        # This setup is for a single-symbol worker managed by the orchestrator's commands.
-        connector = ExchangeConnector(symbols=config.SYMBOLS, output_queue=market_data_q)
-        data_handler = DataHandler(input_queue=market_data_q, strategy_input_queue=strategy_input_q)
-        portfolio_manager = PortfolioManager(symbol=config.SYMBOLS[0], signal_queue=signal_q, order_queue=order_q)
-        strategy = TitanStrategy(symbol=config.SYMBOLS[0], input_queue=strategy_input_q, signal_queue=signal_q, portfolio_manager=portfolio_manager)
-        order_executor = OrderExecutor(order_queue=order_q, connector=connector)
-        orchestrator = MasterOrchestrator(bot_manager=None)
-
-        # --- Create and track tasks ---
-        tasks_to_run = [
-            orchestrator.run(), 
-            connector.run(),
-            data_handler.run(),
-            strategy.run(),
-            portfolio_manager.run(),
-            order_executor.run()
-        ]
-        
-        for coro in tasks_to_run:
-            task = asyncio.create_task(coro)
-            running_tasks.add(task)
-            task.add_done_callback(running_tasks.discard)
-
-        logging.info(f"Starting {len(running_tasks)} concurrent bot tasks.")
-        await asyncio.gather(*running_tasks)
-
-    except asyncio.CancelledError:
-        logging.info("Main bot coroutine was cancelled. Shutting down gracefully.")
-    except Exception as e:
-        logging.critical(f"A critical error occurred in the main bot task: {e}", exc_info=True)
+        loop.run_until_complete(main())
     finally:
-        logging.info("All bot tasks have concluded.")
+        logging.info("Bot shutdown complete.")
+        loop.close()

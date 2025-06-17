@@ -17,3 +17,12 @@ class Order:
     order_type: Literal['MARKET', 'LIMIT']
     qty: float
     price: float = None # Required for LIMIT orders
+
+@dataclass
+class FillConfirmation:
+    """Represents a confirmed trade fill from the exchange."""
+    symbol: str
+    order_id: str
+    side: Literal['BUY', 'SELL']
+    qty: float
+    price: float

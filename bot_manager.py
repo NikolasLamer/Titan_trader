@@ -27,24 +27,44 @@ class BotManager:
 
         logging.info(f"BOT MANAGER: Starting bot for {symbol} with params: {params}")
 
+        # Create dedicated queues for this bot instance
         strategy_q = asyncio.Queue()
         signal_q = asyncio.Queue()
         order_q = asyncio.Queue()
+        fill_confirmation_q = asyncio.Queue() # New queue for feedback
 
+        # Register the symbol with the data handler to start receiving data
         self.data_handler.register_strategy_queue(symbol, strategy_q)
         if symbol not in self.connector.symbols:
-             self.connector.add_symbol(symbol) # Assumes dynamic subscription method
+             self.connector.add_symbol(symbol)
 
-        portfolio_manager = PortfolioManager(symbol=symbol, signal_queue=signal_q, order_queue=order_q, initial_params=params)
-        strategy = TitanStrategy(symbol=symbol, input_queue=strategy_q, signal_queue=signal_q, portfolio_manager=portfolio_manager)
-        order_executor = OrderExecutor(order_queue=order_q, connector=self.connector)
+        # Instantiate all components for the bot
+        portfolio_manager = PortfolioManager(
+            symbol=symbol,
+            signal_queue=signal_q,
+            order_queue=order_q,
+            fill_confirmation_queue=fill_confirmation_q, # Pass it here
+            initial_params=params
+        )
+        strategy = TitanStrategy(
+            symbol=symbol,
+            input_queue=strategy_q,
+            signal_queue=signal_q,
+            portfolio_manager=portfolio_manager
+        )
+        order_executor = OrderExecutor(
+            order_queue=order_q,
+            connector=self.connector,
+            fill_confirmation_queue=fill_confirmation_q # And here
+        )
 
+        # Create and track all tasks for this bot
         tasks = {
             asyncio.create_task(strategy.run()),
             asyncio.create_task(portfolio_manager.run()),
             asyncio.create_task(order_executor.run()),
         }
-        
+
         self.active_bots[symbol] = {
             "tasks": tasks,
             "portfolio_manager": portfolio_manager
@@ -57,21 +77,22 @@ class BotManager:
             return
 
         logging.info(f"BOT MANAGER: Stopping bot for {symbol}.")
-        
+
         bot_instance = self.active_bots.pop(symbol)
         pm = bot_instance["portfolio_manager"]
 
         if manage_position:
             # This requires PortfolioManager to have access to the latest price
             await pm.manage_dropped_position()
-        
+
         pm.save_state()
 
         for task in bot_instance["tasks"]:
             task.cancel()
-        
+
         await asyncio.gather(*bot_instance["tasks"], return_exceptions=True)
         self.data_handler.deregister_strategy_queue(symbol)
+        self.connector.remove_symbol(symbol) # Unsubscribe from WebSocket
         logging.info(f"Bot for {symbol} has been fully stopped.")
 
     def save_all_states(self):

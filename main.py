@@ -9,13 +9,13 @@ from titan.config import config
 from titan.exchange_connector import ExchangeConnector
 from titan.data_handler import DataHandler
 from titan.orchestrator import MasterOrchestrator
-from titan.bot_manager import BotManager
+from titan.bot_manager import BotManager # Import BotManager
 
 running_tasks: Set[asyncio.Task] = set()
 
-def handle_shutdown(sig, loop, bot_manager):
-    logging.info(f"Received shutdown signal {sig.name}. Stopping bots and saving state...")
-    # Call bot manager to save state of all active bots
+def handle_shutdown(sig, loop, bot_manager: BotManager):
+    """Gracefully stop all running asyncio tasks and save state."""
+    logging.info(f"Received shutdown signal {sig.name}. Saving states and cancelling tasks...")
     if bot_manager:
         bot_manager.save_all_states()
     
@@ -23,23 +23,21 @@ def handle_shutdown(sig, loop, bot_manager):
         task.cancel()
 
 async def main():
+    """Initializes and runs all bot components as concurrent tasks."""
     setup_logging()
     logging.info(f"Initializing TitanGrid Master Control in {config.MODE} mode...")
 
-    # Shared queues for components that are "global"
+    # --- Instantiate Global/Shared Modules ---
+    # These are shared across all potential bots
     market_data_q = asyncio.Queue()
     
-    # --- Instantiate Global/Shared Modules ---
     connector = ExchangeConnector(
-        symbols=config.SYMBOLS, # This will later be managed by BotManager
+        symbols=[], # The Orchestrator/BotManager will now manage subscriptions
         output_queue=market_data_q
     )
     
-    # The data handler needs to be aware of all symbols being traded
-    # A more advanced version might have one data handler per symbol
     data_handler = DataHandler(
-        input_queue=market_data_q,
-        # This queue is now effectively managed inside the bot manager
+        input_queue=market_data_q
     )
 
     # --- Instantiate Lifecycle and Orchestration Managers ---
@@ -53,27 +51,26 @@ async def main():
         data_handler.run(),
     ]
     
+    global running_tasks
     for coro in tasks_to_run:
         task = asyncio.create_task(coro)
         running_tasks.add(task)
         task.add_done_callback(running_tasks.discard)
 
-    logging.info(f"Starting {len(running_tasks)} core service tasks...")
+    logging.info(f"Starting {len(running_tasks)} core service tasks.")
     
     try:
         await asyncio.gather(*running_tasks)
     except asyncio.CancelledError:
-        logging.info("Main task group cancelled. Bot is shutting down.")
+        logging.info("Main task group cancelled.")
 
 if __name__ == "__main__":
-    # This block is now primarily for local script-based execution
-    # For Docker deployment, the app.py/Gunicorn is the entry point.
     loop = asyncio.get_event_loop()
     
-    # The bot_manager instance must be created here to be passed to the shutdown handler
-    # This highlights the complexity of managing shared state in top-level scripts
+    # We need a placeholder BotManager to pass to the shutdown handler
+    # In a more complex app, this might be handled by a global context object
     temp_connector = ExchangeConnector(symbols=[], output_queue=asyncio.Queue())
-    temp_data_handler = DataHandler(input_queue=asyncio.Queue(), strategy_input_queue=asyncio.Queue())
+    temp_data_handler = DataHandler(input_queue=asyncio.Queue())
     main_bot_manager = BotManager(connector=temp_connector, data_handler=temp_data_handler)
     
     for sig in (signal.SIGINT, signal.SIGTERM):
